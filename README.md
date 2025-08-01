@@ -256,6 +256,7 @@ check-license --summary-only     # Show summary only
 check-license --verbose          # Show detailed content
 check-license --ignore node_modules,dist  # Ignore specific directories
 check-license --output report.csv # Save results to CSV file
+check-license --version          # Show tool version
 check-license --help             # Show help
 ```
 

@@ -13,6 +13,9 @@ from collections import defaultdict
 from datetime import datetime
 import hashlib
 
+# Tool version
+__version__ = "0.1.0"
+
 # Color codes for terminal output
 class Colors:
     RED = '\033[91m'
@@ -322,6 +325,9 @@ def main():
                         help='無視するディレクトリ/ファイル（カンマ区切り）')
     parser.add_argument('--output', '-o', type=str,
                         help='結果をファイルに保存（CSV形式）')
+    parser.add_argument('--version', action='version',
+                        version=f'%(prog)s {__version__}',
+                        help='ツールのバージョンを表示して終了')
     
     args = parser.parse_args()
     
