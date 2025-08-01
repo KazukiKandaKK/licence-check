@@ -256,6 +256,7 @@ check-license --summary-only     # サマリーのみ表示
 check-license --verbose          # 詳細な内容を表示
 check-license --ignore node_modules,dist  # 特定のディレクトリを無視
 check-license --output report.csv # 結果をCSVファイルに保存
+check-license --version          # ツールのバージョンを表示
 check-license --help             # ヘルプを表示
 ```
 
