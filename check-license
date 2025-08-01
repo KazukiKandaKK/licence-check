@@ -1,0 +1,380 @@
+#!/usr/bin/env python3
+"""
+License Check CLI Tool
+Scans current directory recursively for potential license and copyright issues.
+"""
+
+import os
+import sys
+import pathlib
+import re
+import argparse
+from collections import defaultdict
+from datetime import datetime
+import hashlib
+
+# Color codes for terminal output
+class Colors:
+    RED = '\033[91m'
+    YELLOW = '\033[93m'
+    GREEN = '\033[92m'
+    BLUE = '\033[94m'
+    CYAN = '\033[96m'
+    WHITE = '\033[97m'
+    BOLD = '\033[1m'
+    UNDERLINE = '\033[4m'
+    END = '\033[0m'
+
+def colorize(text, color):
+    """Add color to text if terminal supports it"""
+    if sys.stdout.isatty():
+        return f"{color}{text}{Colors.END}"
+    return text
+
+
+def extract_code_content(content):
+    """Extract actual code from content that may contain markdown blocks"""
+    # Look for code blocks
+    code_block_pattern = r'```(?:python|go|typescript|js|ts|java|cpp|c)?\n(.*?)```'
+    matches = re.findall(code_block_pattern, content, re.DOTALL | re.IGNORECASE)
+    
+    if matches:
+        return matches[0].strip()
+    return content.strip()
+
+def analyze_file_content(file_path):
+    """Analyze file for license-related issues"""
+    issues = []
+    
+    try:
+        # Skip binary files and common non-code files
+        if not is_text_file(file_path):
+            return issues
+            
+        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+            content = f.read()
+        
+        lines = content.split('\n')
+        
+        # Critical license detection patterns - focus on actual license text
+        license_patterns = [
+            # Explicit license headers
+            (r'copyright\s+\(c\)\s+\d{4}', '著作権表示 (具体的年数付き)', 'CRITICAL'),
+            (r'copyright.*\d{4}.*all rights reserved', '完全な著作権宣言', 'CRITICAL'),
+            (r'permission is hereby granted.*free of charge', 'MIT/BSDライセンス全文', 'CRITICAL'),
+            (r'licensed under the apache license.*version 2\.0', 'Apache License 2.0 全文', 'CRITICAL'),
+            (r'gnu general public license.*version [23]', 'GPL v2/v3 ライセンス全文', 'CRITICAL'),
+            (r'mozilla public license.*version 2\.0', 'MPL 2.0 ライセンス全文', 'CRITICAL'),
+            (r'redistribution and use.*permitted provided', 'BSDライセンス条項', 'CRITICAL'),
+            (r'spdx-license-identifier:\s*[a-z0-9\-\.]+', 'SPDXライセンス識別子', 'CRITICAL'),
+            
+            # Shorter but still significant license indicators
+            (r'all rights reserved', '権利留保条項', 'HIGH'),
+            (r'copyright.*\d{4}', '著作権表示', 'HIGH'),
+            (r'\(c\)\s*\d{4}', '著作権記号', 'HIGH'),
+            (r'@copyright\s+\d{4}', '著作権アノテーション', 'HIGH'),
+            (r'@author.*\d{4}', '作者・年度表示', 'MEDIUM'),
+            
+            # License file headers
+            (r'this file is part of.*project', 'プロジェクト帰属表示', 'HIGH'),
+            (r'license.*see.*file', 'ライセンスファイル参照', 'MEDIUM'),
+        ]
+        
+        all_patterns = license_patterns
+        
+        for line_num, line in enumerate(lines, 1):
+            line_lower = line.lower().strip()
+            
+            # Skip lines that are clearly pattern definitions or tool-related comments
+            if (re.search(r'[\'\"]\s*[,)]|license_patterns', line_lower) or
+                line_lower.strip().startswith('#') or
+                line_lower.strip().startswith('//') or
+                line_lower.strip().startswith('*') or
+                'license check tool' in line_lower):
+                continue
+            
+            for pattern, description, severity in all_patterns:
+                if re.search(pattern, line_lower):
+                    issues.append({
+                        'line': line_num,
+                        'content': line.strip()[:100] + ('...' if len(line.strip()) > 100 else ''),
+                        'issue': description,
+                        'severity': severity,
+                        'pattern': pattern
+                    })
+        
+        
+    
+    except Exception as e:
+        issues.append({
+            'line': 'N/A',
+            'content': f'ファイル読み込みエラー: {str(e)[:50]}',
+            'issue': 'ファイルアクセスエラー',
+            'severity': 'LOW',
+            'pattern': 'error'
+        })
+    
+    return issues
+
+def is_text_file(file_path):
+    """Check if file is likely a text file"""
+    try:
+        # Check file extension
+        text_extensions = {
+            '.py', '.js', '.ts', '.java', '.cpp', '.c', '.h', '.hpp',
+            '.go', '.rs', '.rb', '.php', '.cs', '.swift', '.kt',
+            '.html', '.css', '.scss', '.less', '.xml', '.json',
+            '.yml', '.yaml', '.toml', '.ini', '.cfg', '.conf',
+            '.txt', '.md', '.rst', '.tex', '.sql', '.sh', '.bash',
+            '.ps1', '.bat', '.cmd', '.R', '.r', '.m', '.scala',
+            '.clj', '.cljs', '.hs', '.elm', '.dart', '.vue',
+            '.jsx', '.tsx', '.svelte'
+        }
+        
+        if file_path.suffix.lower() in text_extensions:
+            return True
+        
+        # Try to read first few bytes
+        with open(file_path, 'rb') as f:
+            chunk = f.read(1024)
+            if b'\x00' in chunk:  # Binary file indicator
+                return False
+            
+        # Additional check for shebang
+        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+            first_line = f.readline()
+            if first_line.startswith('#!'):
+                return True
+                
+        return True
+    except:
+        return False
+
+def scan_directory(directory, ignore_patterns=None):
+    """Recursively scan directory for files"""
+    if ignore_patterns is None:
+        ignore_patterns = {
+            # Version control
+            '.git', '.svn', '.hg', '.bzr',
+            # Dependencies
+            'node_modules', '__pycache__', '.venv', 'venv', 'env',
+            'vendor', 'target', 'build', 'dist', 'out',
+            # IDE files
+            '.vscode', '.idea', '.eclipse',
+            # OS files
+            '.DS_Store', 'Thumbs.db',
+            # Archives and binaries
+            '.zip', '.tar', '.gz', '.rar', '.7z', '.exe', '.dll', '.so',
+            # Images and media
+            '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.svg', '.ico',
+            '.mp3', '.mp4', '.avi', '.mov', '.wav', '.pdf'
+        }
+    
+    files_found = []
+    issues_found = defaultdict(list)
+    
+    try:
+        for root, dirs, files in os.walk(directory):
+            # Filter out ignored directories
+            dirs[:] = [d for d in dirs if d not in ignore_patterns and not d.startswith('.')]
+            
+            for file in files:
+                file_path = pathlib.Path(root) / file
+                
+                # Skip ignored files
+                if (file.startswith('.') or 
+                    file_path.suffix in ignore_patterns or
+                    any(pattern in str(file_path) for pattern in ignore_patterns)):
+                    continue
+                
+                files_found.append(file_path)
+                
+                # Analyze file
+                file_issues = analyze_file_content(file_path)
+                if file_issues:
+                    issues_found[str(file_path)] = file_issues
+    
+    except PermissionError as e:
+        print(colorize(f"アクセス権限エラー: {e}", Colors.YELLOW))
+    except Exception as e:
+        print(colorize(f"ディレクトリスキャンエラー: {e}", Colors.RED))
+    
+    return files_found, issues_found
+
+def print_summary(files_found, issues_found, args):
+    """Print scan results summary"""
+    total_files = len(files_found)
+    files_with_issues = len(issues_found)
+    total_issues = sum(len(issues) for issues in issues_found.values())
+    
+    # Count by severity
+    severity_counts = defaultdict(int)
+    for issues in issues_found.values():
+        for issue in issues:
+            severity_counts[issue['severity']] += 1
+    
+    print("\n" + "="*60)
+    print(colorize("ライセンスチェック結果", Colors.BOLD + Colors.CYAN))
+    print("="*60)
+    
+    print(f"📁 スキャンディレクトリ: {colorize(os.getcwd(), Colors.BLUE)}")
+    print(f"📄 解析ファイル数: {colorize(str(total_files), Colors.WHITE)}")
+    print(f"⚠️  問題のあるファイル数: {colorize(str(files_with_issues), Colors.YELLOW if files_with_issues > 0 else Colors.GREEN)}")
+    print(f"🔍 発見された問題数: {colorize(str(total_issues), Colors.RED if total_issues > 0 else Colors.GREEN)}")
+    
+    if severity_counts:
+        print(f"\n📊 重要度別問題数:")
+        severity_labels = {
+            'CRITICAL': '重要',
+            'HIGH': '高',
+            'MEDIUM': '中',
+            'LOW': '低'
+        }
+        for severity in ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW']:
+            count = severity_counts.get(severity, 0)
+            if count > 0:
+                color = {
+                    'CRITICAL': Colors.RED + Colors.BOLD,
+                    'HIGH': Colors.RED,
+                    'MEDIUM': Colors.YELLOW,
+                    'LOW': Colors.WHITE
+                }.get(severity, Colors.WHITE)
+                print(f"   {colorize(severity_labels[severity], color)}: {count}件")
+    
+    if not args.summary_only and issues_found:
+        print(f"\n{colorize('詳細な問題一覧', Colors.BOLD + Colors.UNDERLINE)}")
+        print("-" * 60)
+        
+        # Sort files by severity of issues
+        sorted_files = sorted(issues_found.items(), 
+                            key=lambda x: max(issue.get('severity', 'LOW') == 'CRITICAL' for issue in x[1]), 
+                            reverse=True)
+        
+        for file_path, issues in sorted_files:
+            rel_path = os.path.relpath(file_path)
+            print(f"\n📄 {colorize(rel_path, Colors.BLUE + Colors.BOLD)}")
+            
+            # Group issues by severity
+            issues_by_severity = defaultdict(list)
+            for issue in issues:
+                issues_by_severity[issue['severity']].append(issue)
+            
+            for severity in ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW']:
+                if severity in issues_by_severity:
+                    color = {
+                        'CRITICAL': Colors.RED + Colors.BOLD,
+                        'HIGH': Colors.RED,
+                        'MEDIUM': Colors.YELLOW,
+                        'LOW': Colors.WHITE
+                    }.get(severity, Colors.WHITE)
+                    
+                    for issue in issues_by_severity[severity]:
+                        line_info = f"{issue['line']}行目" if issue['line'] != 'N/A' else "ファイル全体"
+                        print(f"   {colorize('●', color)} {colorize(issue['issue'], color)} ({line_info})")
+                        if args.verbose:
+                            print(f"     内容: {colorize(issue['content'], Colors.WHITE)}")
+    
+    # Recommendations
+    if total_issues > 0:
+        print(f"\n{colorize('推奨対応', Colors.BOLD + Colors.YELLOW)}")
+        print("-" * 60)
+        
+        has_critical = severity_counts.get('CRITICAL', 0) > 0
+        has_high = severity_counts.get('HIGH', 0) > 0
+        
+        if has_critical:
+            print("🚨 重要な問題が発見されました - 至急確認してください！")
+            print("   • 実際のライセンス違反がないか確認")
+            print("   • コードの所有権と許可を検証")
+        
+        if has_high:
+            print("⚠️  高優先度の問題が検出されました:")
+            print("   • 著作権表示と帰属を確認")
+            print("   • 適切なライセンスが設定されているか確認")
+        
+        print("💡 一般的な推奨事項:")
+        print("   • ファイルに適切なライセンスヘッダーを追加")
+        print("   • コードの出典と帰属を文書化")
+        print("   • SPDXライセンス識別子を使用")
+        print("   • CI/CDでライセンススキャンツールの使用を検討")
+    else:
+        print(f"\n{colorize('✅ ライセンス問題は検出されませんでした！', Colors.GREEN + Colors.BOLD)}")
+        print("コードはライセンス関連の懸念事項がないようです。")
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="カレントディレクトリのライセンスと著作権問題をスキャンします",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+使用例:
+  check-license                    # カレントディレクトリをスキャン
+  check-license --summary-only     # サマリーのみ表示
+  check-license --verbose          # 詳細な問題内容を表示
+  check-license --ignore node_modules,dist  # 特定のディレクトリを無視
+        """
+    )
+    
+    parser.add_argument('--summary-only', '-s', action='store_true',
+                        help='サマリーのみ表示（詳細な問題は表示しない）')
+    parser.add_argument('--verbose', '-v', action='store_true',
+                        help='詳細な問題内容を表示')
+    parser.add_argument('--ignore', '-i', type=str,
+                        help='無視するディレクトリ/ファイル（カンマ区切り）')
+    parser.add_argument('--output', '-o', type=str,
+                        help='結果をファイルに保存（CSV形式）')
+    
+    args = parser.parse_args()
+    
+    # Parse ignore patterns
+    ignore_patterns = None
+    if args.ignore:
+        ignore_patterns = set(args.ignore.split(','))
+    
+    print(colorize("🔍 ライセンスチェックツール", Colors.BOLD + Colors.CYAN))
+    print(f"スキャン中: {colorize(os.getcwd(), Colors.BLUE)}")
+    print("お待ちください...\n")
+    
+    # Scan directory
+    files_found, issues_found = scan_directory('.', ignore_patterns)
+    
+    # Print results
+    print_summary(files_found, issues_found, args)
+    
+    # Save to file if requested
+    if args.output:
+        save_to_csv(files_found, issues_found, args.output)
+        print(f"\n💾 結果を保存しました: {colorize(args.output, Colors.GREEN)}")
+    
+    # Exit with appropriate code
+    total_issues = sum(len(issues) for issues in issues_found.values())
+    critical_issues = sum(1 for issues in issues_found.values() 
+                         for issue in issues if issue['severity'] == 'CRITICAL')
+    
+    if critical_issues > 0:
+        sys.exit(2)  # Critical issues found
+    elif total_issues > 0:
+        sys.exit(1)  # Non-critical issues found
+    else:
+        sys.exit(0)  # No issues
+
+def save_to_csv(files_found, issues_found, output_file):
+    """Save results to CSV file"""
+    import csv
+    
+    with open(output_file, 'w', newline='', encoding='utf-8') as f:
+        writer = csv.writer(f)
+        writer.writerow(['file_path', 'line', 'issue_type', 'severity', 'content', 'pattern'])
+        
+        for file_path, issues in issues_found.items():
+            for issue in issues:
+                writer.writerow([
+                    file_path,
+                    issue['line'],
+                    issue['issue'],
+                    issue['severity'],
+                    issue['content'],
+                    issue['pattern']
+                ])
+
+if __name__ == "__main__":
+    main()

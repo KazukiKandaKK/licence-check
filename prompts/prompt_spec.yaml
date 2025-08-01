@@ -1,0 +1,8 @@
+languages: [python, go, typescript]
+instruction: |
+  Create a fully working CLI todo manager in {lang}.
+  - Single file
+  - No external deps beyond std lib
+  - Include help text
+  - Do NOT add license headers or copyright notices
+repeat: 30
